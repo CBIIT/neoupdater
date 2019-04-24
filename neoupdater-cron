@@ -1,0 +1,42 @@
+#!/bin/bash
+# clean up tmp dirs
+# rotate out old db versions
+# run neoupdater
+
+KEEPVERSIONS=2
+KEEPTMPS=2
+TMPDIR=/mnt/tmp
+DATA_LOC=/usr/local/share/data
+
+NUMALTS=$(sudo update-alternatives --query neo4j_graph_db | grep Alternative | wc -l)
+NUMVERSIONS=`ls -1 $DATA_LOC | wc -l`
+NUMTMPS=`ls -1 $TMPDIR | grep 'tmp\.' |  wc -l`
+
+oldest_data () {
+    local oldest
+    oldest=`find $DATA_LOC -maxdepth 1 -not -name '.'  -printf "%C@ %p\n" | sort -n | { read a b ; echo $b ; }`
+    echo $oldest
+}
+
+oldest_tmp () {
+    local oldest
+    oldest=`find $TMPDIR -maxdepth 1 -path '*tmp.*'  -printf "%C@ %p\n" | sort -n | { read a b ; echo $b ; }`
+    echo $oldest
+}
+
+if [[ $NUMVERSIONS > $KEEPVERSIONS ]]
+then
+    loc=`oldest_data`
+    echo "rm -rf $loc" | logger -t neoupdater
+    2>&1 rm -rf $loc | logger -t neoupdater
+fi
+
+if [[ $NUMTMPS > $KEEPTMPS ]]
+then
+    loc=`oldest_tmp`
+    echo "rm -rf $loc" | logger -t neoupdater
+    2>&1 rm -rf $loc | logger -t neoupdater
+fi
+
+2>&1 neoupdater $@ | grep -v ETA | logger -t neoupdater
+

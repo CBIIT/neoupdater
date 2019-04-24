@@ -1,0 +1,2 @@
+#!/bin/bash
+grep '^|' | perl -Mv5.10 -nle 's/^\|\s*//; s/\s*\|$//; @a = split /\s*\|\s*/; say join( "\t", map {s/^\"//;s/\"$//;$_} @a)'

@@ -1,0 +1,156 @@
+#!/bin/bash
+# deps : cdisutils, gdcdictionary, psqlgraph, gdcdatamodel installed --user
+export PERLBREW_ROOT=/home/ubuntu/perl5/perlbrew
+export PERLBREW_HOME=/home/ubuntu/.perlbrew
+source ${PERLBREW_ROOT}/etc/bashrc
+source /usr/local/bin/neo4j-shared.sh
+DATA_LOC=/usr/local/share/data
+export P2NDIR=/usr/local/share
+CRED_LOC=/home/ubuntu/.cred
+WORKDIR=""
+TMPDIR=/mnt/tmp
+
+setup_environment
+
+print_help () {
+    echo "neoupdater : convert GDC postgres graph to neo4j and update server"
+    echo "Usage: neoupdater [OPTS] [--workdir=<work dir> ]"
+    echo "Options:"
+    echo " --workdir=<workdir> : Do conversions in <workdir> directory"
+    echo " --convert_only : convert psqlgraph to csv and stop"
+    echo " --export_only :  export csv to neo4j graph.db and stop"
+    echo " --move_only : do not run psqlgraph2neo; move graph.db and bump neo4j"
+}
+
+OPTSTR=h
+LONGOPTSTR=help,export_only,convert_only,move_only,cleanup,workdir:
+TEMP=`getopt -o $OPTSTR --long $LONGOPTSTR -- "$@"`
+eval set -- "$TEMP"
+if [ $? != 0 ] ; then print_help ; exit 2 ; fi 
+
+do_psql_to_csv_to_neo () {
+#    source $CRED_LOC/up
+    if [ -z $WORKDIR ] 
+    then
+	WORKDIR=`mktemp -d --tmpdir=$TMPDIR`
+    fi
+    export WORKDIR
+    $P2NDIR/p2n.sh $P2N_OPTS
+    if test "" ;
+    then
+	if [ ! -d $WORKDIR/data ]
+	then
+	    echo "CSV data directory not created. Stop."
+	    exit 1
+	fi
+    fi
+}
+
+do_create_loc_and_move () {
+    if [ ! -d $WORKDIR/data ] 
+    then
+	echo "Can't find work dir $WORKDIR/data. Stop."
+	exit 1
+    fi
+    DATE=$(date "+%Y%m%d%H%M")
+    GRAPH_DB=$DATA_LOC/graph.db_$DATE
+    echo "--- create $GRAPH_DB/graph.db"
+    if sudo mkdir -p $GRAPH_DB 2> /dev/null 
+    then
+	echo --- link neo4j data
+	sudo ln -s $WORKDIR/data $GRAPH_DB/graph.db
+#	sudo cp -R $WORKDIR/data/* $GRAPH_DB/graph.db
+    else
+	echo "Can't create $GRAPH_DB/graph.db. Stop."
+	exit 1
+    fi
+}
+
+stop_neo4j_and_update () {
+    if sudo -E neo4j status | grep -q "is running" ;
+    then
+	echo "--- stop neo4j server"
+	sudo -E neo4j stop 
+	echo
+    fi
+
+    graphdb_update $WORKDIR/data
+}
+
+start_neo4j () {
+    echo "--- start neo4j server"
+    sudo -E neostart
+    sleep 10
+}
+
+create_indexes () {
+    # create indexes
+    echo "create index on :file(file_name);" | cypher-shell
+    for nod in case sample portion analyte aliquot file read_group 
+    do 
+	echo "create index on :$nod(id);" | cypher-shell
+    done
+    for nod in file archive biospecimen_supplement clinical_supplement methylation_beta_value submitted_aligned_reads submitted_methylation_beta_value submitted_tangent_copy_number submitted_unaligned_reads slide_image pathology_report aggregated_somatic_mutation aligned_reads aligned_reads_index analysis_metadata annotated_somatic_mutation copy_number_segment experiment_metadata gene_expression mirna_expression run_metadata simple_somatic_mutation
+    do 
+	echo "create index on :$nod(md5sum);" | cypher-shell
+	echo "create index on :$nod(file_name);" | cypher-shell
+	echo "create index on :$nod(id);" | cypher-shell
+    done
+
+}
+
+tag_neo4j () {
+    # add a View node that tags this instance
+    echo "merge (n:View { source:\"$GRAPH_DB\" });" | cypher-shell 
+    create_indexes
+}
+
+graphdb_update () {
+    echo "--- update alternative graph.db location to $GRAPH_DB"
+    sudo update-alternatives --install /usr/local/share/neo4j/data/databases/graph.db neo4j_graph_db $1 100
+    sudo update-alternatives --set neo4j_graph_db $1
+    return
+}
+
+P2N_OPTS=
+CLEANUP=
+DO_MOVE=1
+RUN_P2N=1
+KICK_NEO=1
+while true ; do
+    case "$1" in
+	-h|--help) print_help ; exit 2 ;;
+	--workdir) WORKDIR=$2 ; shift 2 ;;
+	--export_only|--convert_only) 
+	    P2N_OPTS="$P2N_OPTS $1" ; 
+	    KICK_NEO="" ;
+	    DO_MOVE="" ;
+	    shift ;;
+	--move_only) RUN_P2N="" ; shift ;;
+	--cleanup) P2N_OPTS="$P2N_OPTS $1" ; CLEANUP=1 ; shift ;;
+	--) shift ; break ;;
+	*) echo Option not recognized : $1 ; shift ;;
+    esac
+done
+
+echo $WORKDIR
+
+if [ $RUN_P2N ] 
+then
+    do_psql_to_csv_to_neo
+fi
+
+if [ $DO_MOVE ]
+then
+    do_create_loc_and_move
+fi
+
+if [ $KICK_NEO ]
+then
+    stop_neo4j_and_update
+    start_neo4j
+    tag_neo4j
+fi
+
+echo workdir:$WORKDIR
+echo graphdb:$GRAPH_DB/graph.db

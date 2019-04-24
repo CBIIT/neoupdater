@@ -1,0 +1,4 @@
+ulimit -n 40000
+neo4j start
+
+
